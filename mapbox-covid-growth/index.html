@@ -1,0 +1,237 @@
+<html>
+
+<head>
+    <script src='https://api.mapbox.com/mapbox-gl-js/v1.12.0/mapbox-gl.js'></script>
+    <link href='https://api.mapbox.com/mapbox-gl-js/v1.12.0/mapbox-gl.css' rel='stylesheet' />
+</head>
+
+<body>
+    <div id='map' style='width: 400px; height: 300px;'></div>
+    <script>
+        mapboxgl.accessToken = '<insert mapbox public token>';
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/streets-v11',
+
+            // Pick a reasonable center and zoom to start with based on default data.
+            center: [-80.4527897971384, 37.13764809219349],
+            zoom: 8
+        });
+
+        const map_div = document.getElementById('map')
+        let width = null;
+        let height = null;
+        
+        function resize(new_width, new_height) {
+
+            map_div.style.width = width = new_width;
+            map_div.style.height = height = new_height;
+
+            map.resize();
+        }
+
+        // Equality check for the date format returned
+        function dateEql(date1, date2) {
+            return date1[0] === date2[0] && 
+                date1[1] === date2[1] && 
+                date1[2] === date2[2];
+        }
+
+        // Generator to give us an array of location data for each day.
+        function* daily(data) {
+            let date = data[0].date;
+            let results = [];
+
+            for(let row of data) {
+                if(!dateEql(row.date, date)) {
+                    yield results;
+                    results = [];
+                    date = row.date;
+                }
+                results.push(row);
+            }
+            if(results.length > 0) {
+                yield results;
+            }
+        }
+
+        // Mapbox expects specific GeoJSON format for data. This transforms a set of data into GeoJSON.
+        function transformToGeoJson(data) {
+            return {
+                type: "FeatureCollection",
+                features: data.map(row => {
+                    return {
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [row.longitude, row.latitude] },
+                        properties: { cases: row['total sum of confirmed'] }
+                    };
+                })
+            };
+        }
+
+        // Handle all updates from Chartio via receive message.
+        function receiveMessage(event) {
+            const event_data = JSON.parse(event.data);
+            const new_width = event_data.dimensions.width
+            const new_height = event_data.dimensions.height
+
+            // Set styles
+            document.body.style.background = event_data.options.theme.chart.background;
+
+            // Cache height/width to prevent unnecessary resizes
+            if (new_width !== width || new_height != height) {
+                resize(new_width, new_height);
+
+                width = new_width;
+                height = new_height;
+            }
+
+            // Render
+            const [firstDaysData, ...remainingDaysData] = daily(event_data.data);
+            map.addSource('cases', {
+                'type': 'geojson',
+                'data': transformToGeoJson(firstDaysData)
+            });
+
+            // Create a setTimeout for the first day that then calls a setTimeout for the next day (and so on).
+            remainingDaysData.reverse().reduce((prev, cur) => {
+                return () => {
+                    setTimeout(() => {
+                        map.getSource('cases').setData(transformToGeoJson(cur));
+                        prev();
+                    }, 500);  
+                };
+            }, () => {})();
+
+            // Configure mapbox
+            map.addLayer({
+                'id': 'cases-heat',
+                'type': 'heatmap',
+                'source': 'cases',
+                'maxzoom': 11,
+                'paint': {
+                    'heatmap-weight': [
+                        'interpolate',
+                        ['linear'],
+                        ['get', 'cases'],
+                        0,
+                        0,
+                        500,
+                        1
+                    ],
+                    'heatmap-intensity': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0,
+                        1,
+                        11,
+                        3
+                    ],
+                    'heatmap-color': [
+                        'interpolate',
+                        ['linear'],
+                        ['heatmap-density'],
+                        0,
+                        'rgba(33,102,172,0)',
+                        0.2,
+                        'rgb(103,169,207)',
+                        0.4,
+                        'rgb(209,229,240)',
+                        0.6,
+                        'rgb(253,219,199)',
+                        0.8,
+                        'rgb(239,138,98)',
+                        1,
+                        'rgb(178,24,43)'
+                    ],
+                    'heatmap-radius': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        0,
+                        ['interpolate', ['linear'], ['get', 'cases'], 0, 0, 500, 10],
+                        11,
+                        ['interpolate', ['linear'], ['get', 'cases'], 0, 0, 500, 100]
+                    ],
+                    'heatmap-opacity': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        7,
+                        .8,
+                        11,
+                        0
+                    ]
+                }
+            },
+                'waterway-label'
+            );
+            map.addLayer(
+                {
+                    'id': 'cases-point',
+                    'type': 'circle',
+                    'source': 'cases',
+                    'minzoom': 7,
+                    'paint': {
+                        'circle-radius': [
+                            'interpolate',
+                            ['linear'],
+                            ['zoom'],
+                            7,
+                            ['interpolate', ['linear'], ['get', 'cases'], 1, 1, 500, 10],
+                            16,
+                            ['interpolate', ['linear'], ['get', 'cases'], 1, 5, 500, 150]
+                        ],
+                        'circle-color': [
+                            'interpolate',
+                            ['linear'],
+                            ['get', 'cases'],
+                            0,
+                            'rgba(33,102,172,0)',
+                            1,
+                            'rgb(103,169,207)',
+                            10,
+                            'rgb(209,229,240)',
+                            100,
+                            'rgb(253,219,199)',
+                            250,
+                            'rgb(239,138,98)',
+                            500,
+                            'rgb(178,24,43)'
+                        ],
+                        'circle-stroke-color': 'white',
+                        'circle-stroke-width': 1,
+                        'circle-opacity': [
+                            'interpolate',
+                            ['linear'],
+                            ['zoom'],
+                            7,
+                            0,
+                            11,
+                            .8
+                        ]
+                    }
+                },
+                'waterway-label'
+            );
+
+            // Add zoom and rotation controls to the map.
+            map.addControl(new mapboxgl.NavigationControl());
+        }
+
+        // Mapbox must be loaded and we must have data to render, so wait until both are true.
+        const isMapLoaded = new Promise((resolve, reject) => {
+            map.on('load', resolve);
+        });
+        const isDataReady = new Promise((resolve, reject) => {
+            window.addEventListener('message', resolve);
+        })
+        Promise.all([isMapLoaded, isDataReady]).then(([_, event]) => {
+            receiveMessage(event);
+            window.addEventListener('message', receiveMessage);
+        });
+    </script>
+</body>
+
+</html>
